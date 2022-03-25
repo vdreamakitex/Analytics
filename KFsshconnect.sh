@@ -1,0 +1,1 @@
+ssh sshuser@mykafka-ssh.azurehdinsight.net
