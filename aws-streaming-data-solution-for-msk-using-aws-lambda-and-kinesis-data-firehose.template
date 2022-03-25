@@ -1,0 +1,1392 @@
+{
+  "Description": "(SO0151) - AWS Streaming Data Solution for Amazon MSK (MSK -> Lambda -> KDF). Version v1.6.0",
+  "Metadata": {
+    "AWS::CloudFormation::Interface": {
+      "ParameterGroups": [
+        {
+          "Label": {
+            "default": "AWS Lambda consumer configuration"
+          },
+          "Parameters": [
+            "ClusterArn",
+            "BatchSize",
+            "TopicName",
+            "SecretArn"
+          ]
+        },
+        {
+          "Label": {
+            "default": "Amazon Kinesis Data Firehose configuration"
+          },
+          "Parameters": [
+            "BufferingSize",
+            "BufferingInterval",
+            "CompressionFormat"
+          ]
+        }
+      ],
+      "ParameterLabels": {
+        "ClusterArn": {
+          "default": "ARN of the MSK cluster"
+        },
+        "BatchSize": {
+          "default": "Maximum number of items to retrieve in a single batch"
+        },
+        "TopicName": {
+          "default": "Name of a Kafka topic to consume (topic must already exist before the stack is launched)"
+        },
+        "SecretArn": {
+          "default": "(Optional) Secret ARN used for SASL/SCRAM authentication of the brokers in your MSK cluster"
+        },
+        "BufferingSize": {
+          "default": "Size of the buffer (in MBs) that incoming data is buffered before delivery"
+        },
+        "BufferingInterval": {
+          "default": "Length of time (in seconds) that incoming data is buffered before delivery"
+        },
+        "CompressionFormat": {
+          "default": "Compression format for delivered data in Amazon S3"
+        }
+      }
+    }
+  },
+  "Parameters": {
+    "BufferingSize": {
+      "Type": "Number",
+      "Default": 5,
+      "MaxValue": 128,
+      "MinValue": 1
+    },
+    "BufferingInterval": {
+      "Type": "Number",
+      "Default": 300,
+      "MaxValue": 900,
+      "MinValue": 60
+    },
+    "CompressionFormat": {
+      "Type": "String",
+      "Default": "GZIP",
+      "AllowedValues": [
+        "GZIP",
+        "HADOOP_SNAPPY",
+        "Snappy",
+        "UNCOMPRESSED",
+        "ZIP"
+      ]
+    },
+    "ClusterArn": {
+      "Type": "String",
+      "AllowedPattern": "arn:(aws[a-zA-Z0-9-]*):([a-zA-Z0-9\\-])+:([a-z]{2}(-gov)?-[a-z]+-\\d{1})?:(\\d{12})?:(.*)",
+      "ConstraintDescription": "Cluster ARN must be in the following format: arn:${Partition}:kafka:${Region}:${Account}:cluster/${ClusterName}/${UUID}"
+    },
+    "BatchSize": {
+      "Type": "Number",
+      "Default": 100,
+      "MaxValue": 10000,
+      "MinValue": 1
+    },
+    "TopicName": {
+      "Type": "String",
+      "AllowedPattern": ".+",
+      "ConstraintDescription": "Topic name must not be empty"
+    },
+    "SecretArn": {
+      "Type": "String",
+      "MaxLength": 200
+    }
+  },
+  "Resources": {
+    "OutputAccessLogsBucket8BE3FC5F": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "AccessControl": "LogDeliveryWrite",
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        }
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain",
+      "Metadata": {
+        "cfn_nag": {
+          "rules_to_suppress": [
+            {
+              "id": "W35",
+              "reason": "This bucket is used to store access logs for another bucket"
+            },
+            {
+              "id": "W51",
+              "reason": "This bucket does not need a bucket policy"
+            }
+          ]
+        }
+      }
+    },
+    "OutputBucketB1E245A7": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "AbortIncompleteMultipartUpload": {
+                "DaysAfterInitiation": 7
+              },
+              "Id": "multipart-upload-rule",
+              "Status": "Enabled"
+            },
+            {
+              "Id": "intelligent-tiering-rule",
+              "Status": "Enabled",
+              "Transitions": [
+                {
+                  "StorageClass": "INTELLIGENT_TIERING",
+                  "TransitionInDays": 1
+                }
+              ]
+            }
+          ]
+        },
+        "LoggingConfiguration": {
+          "DestinationBucketName": {
+            "Ref": "OutputAccessLogsBucket8BE3FC5F"
+          }
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        }
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain",
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/Output/Bucket/Resource"
+      }
+    },
+    "OutputBucketPolicyD67A70DF": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "OutputBucketB1E245A7"
+        },
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "OutputBucketB1E245A7",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::GetAtt": [
+                    "OutputBucketB1E245A7",
+                    "Arn"
+                  ]
+                }
+              ],
+              "Sid": "HttpsOnly"
+            }
+          ],
+          "Version": "2012-10-17"
+        }
+      },
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/Output/Bucket/Policy/Resource"
+      }
+    },
+    "KdfToS3firehoseloggroupEDDCC72C": {
+      "Type": "AWS::Logs::LogGroup",
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain",
+      "Metadata": {
+        "cfn_nag": {
+          "rules_to_suppress": [
+            {
+              "id": "W86",
+              "reason": "Retention period for CloudWatchLogs LogGroups are set to 'Never Expire' to preserve customer data indefinitely"
+            },
+            {
+              "id": "W84",
+              "reason": "Log group data is always encrypted in CloudWatch Logs using an AWS Managed KMS Key"
+            }
+          ]
+        }
+      }
+    },
+    "KdfToS3firehoseloggroupfirehoselogstream7B74F7A7": {
+      "Type": "AWS::Logs::LogStream",
+      "Properties": {
+        "LogGroupName": {
+          "Ref": "KdfToS3firehoseloggroupEDDCC72C"
+        }
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain",
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/KdfToS3/firehose-log-group/firehose-log-stream/Resource"
+      }
+    },
+    "KdfToS3KinesisFirehoseRole7E80AAFB": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "firehose.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        }
+      },
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/KdfToS3/KinesisFirehoseRole/Resource"
+      }
+    },
+    "KdfToS3KinesisFirehosePolicy6D39B52C": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "s3:AbortMultipartUpload",
+                "s3:GetBucketLocation",
+                "s3:GetObject",
+                "s3:ListBucket",
+                "s3:ListBucketMultipartUploads",
+                "s3:PutObject"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "OutputBucketB1E245A7",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "OutputBucketB1E245A7",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            },
+            {
+              "Action": "logs:PutLogEvents",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":logs:",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":log-group:",
+                    {
+                      "Ref": "KdfToS3firehoseloggroupEDDCC72C"
+                    },
+                    ":log-stream:",
+                    {
+                      "Ref": "KdfToS3firehoseloggroupfirehoselogstream7B74F7A7"
+                    }
+                  ]
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "KdfToS3KinesisFirehosePolicy6D39B52C",
+        "Roles": [
+          {
+            "Ref": "KdfToS3KinesisFirehoseRole7E80AAFB"
+          }
+        ]
+      },
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/KdfToS3/KinesisFirehosePolicy/Resource"
+      }
+    },
+    "KdfToS3KinesisFirehoseCE3CF29D": {
+      "Type": "AWS::KinesisFirehose::DeliveryStream",
+      "Properties": {
+        "DeliveryStreamEncryptionConfigurationInput": {
+          "KeyType": "AWS_OWNED_CMK"
+        },
+        "DeliveryStreamType": "DirectPut",
+        "ExtendedS3DestinationConfiguration": {
+          "BucketARN": {
+            "Fn::GetAtt": [
+              "OutputBucketB1E245A7",
+              "Arn"
+            ]
+          },
+          "BufferingHints": {
+            "IntervalInSeconds": {
+              "Ref": "BufferingInterval"
+            },
+            "SizeInMBs": {
+              "Ref": "BufferingSize"
+            }
+          },
+          "CloudWatchLoggingOptions": {
+            "Enabled": true,
+            "LogGroupName": {
+              "Ref": "KdfToS3firehoseloggroupEDDCC72C"
+            },
+            "LogStreamName": {
+              "Ref": "KdfToS3firehoseloggroupfirehoselogstream7B74F7A7"
+            }
+          },
+          "CompressionFormat": {
+            "Ref": "CompressionFormat"
+          },
+          "EncryptionConfiguration": {
+            "KMSEncryptionConfig": {
+              "AWSKMSKeyARN": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":kms:",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":alias/aws/s3"
+                  ]
+                ]
+              }
+            }
+          },
+          "ErrorOutputPrefix": "errors/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/!{firehose:error-output-type}",
+          "Prefix": "data/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/",
+          "RoleARN": {
+            "Fn::GetAtt": [
+              "KdfToS3KinesisFirehoseRole7E80AAFB",
+              "Arn"
+            ]
+          }
+        }
+      },
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/KdfToS3/KinesisFirehose"
+      }
+    },
+    "LambdaFnRole32F542B0": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":logs:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":log-group:/aws/lambda/*"
+                      ]
+                    ]
+                  }
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "CloudWatchLogsPolicy"
+          },
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "kafka:DescribeCluster",
+                    "kafka:GetBootstrapBrokers",
+                    "kafka:ListScramSecrets",
+                    "ec2:CreateNetworkInterface",
+                    "ec2:DescribeNetworkInterfaces",
+                    "ec2:DescribeVpcs",
+                    "ec2:DeleteNetworkInterface",
+                    "ec2:DescribeSubnets",
+                    "ec2:DescribeSecurityGroups"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "NetworkingPolicy"
+                },
+                {
+                  "Action": [
+                    "kafka-cluster:Connect",
+                    "kafka-cluster:DescribeGroup",
+                    "kafka-cluster:AlterGroup",
+                    "kafka-cluster:DescribeTopic",
+                    "kafka-cluster:ReadData",
+                    "kafka-cluster:DescribeClusterDynamicConfiguration"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Ref": "ClusterArn"
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition"
+                          },
+                          ":kafka:",
+                          {
+                            "Ref": "AWS::Region"
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId"
+                          },
+                          ":topic/",
+                          {
+                            "Fn::Select": [
+                              1,
+                              {
+                                "Fn::Split": [
+                                  "/",
+                                  {
+                                    "Fn::Select": [
+                                      5,
+                                      {
+                                        "Fn::Split": [
+                                          ":",
+                                          {
+                                            "Ref": "ClusterArn"
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          "/*/",
+                          {
+                            "Ref": "TopicName"
+                          }
+                        ]
+                      ]
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition"
+                          },
+                          ":kafka:",
+                          {
+                            "Ref": "AWS::Region"
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId"
+                          },
+                          ":group/",
+                          {
+                            "Fn::Select": [
+                              1,
+                              {
+                                "Fn::Split": [
+                                  "/",
+                                  {
+                                    "Fn::Select": [
+                                      5,
+                                      {
+                                        "Fn::Split": [
+                                          ":",
+                                          {
+                                            "Ref": "ClusterArn"
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          "/*/*"
+                        ]
+                      ]
+                    }
+                  ],
+                  "Sid": "IamPolicy"
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "MskPolicy"
+          }
+        ]
+      },
+      "Metadata": {
+        "cfn_nag": {
+          "rules_to_suppress": [
+            {
+              "id": "W11",
+              "reason": "Actions do not support resource level permissions"
+            }
+          ]
+        }
+      }
+    },
+    "LambdaFnRoleDefaultPolicyEB0F84C6": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "firehose:PutRecord",
+                "firehose:PutRecordBatch"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "KdfToS3KinesisFirehoseCE3CF29D",
+                  "Arn"
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "LambdaFnRoleDefaultPolicyEB0F84C6",
+        "Roles": [
+          {
+            "Ref": "LambdaFnRole32F542B0"
+          }
+        ]
+      },
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/LambdaFn/Role/Role/DefaultPolicy/Resource"
+      }
+    },
+    "LambdaFnCustomResourceRole86D5808B": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":logs:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":log-group:/aws/lambda/*"
+                      ]
+                    ]
+                  }
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "CloudWatchLogsPolicy"
+          },
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": "secretsmanager:DescribeSecret",
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Ref": "SecretArn"
+                  }
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "SecretMetadataPolicy"
+          }
+        ]
+      },
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/LambdaFn/CustomResourceRole/Role/Resource"
+      },
+      "Condition": "LambdaFnIsSecretNotEmptyCondition8D346EFC"
+    },
+    "LambdaFnCustomResourceC3F49C43": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "solutions-${AWS::Region}"
+          },
+          "S3Key": "aws-streaming-data-solution-for-amazon-msk/v1.6.0/asset3b3a3c7d626dcee5234790872f10587653898f0ccea1d4d219b4bba96efb74f7.zip"
+        },
+        "Role": {
+          "Fn::GetAtt": [
+            "LambdaFnCustomResourceRole86D5808B",
+            "Arn"
+          ]
+        },
+        "Environment": {
+          "Variables": {
+            "AWS_SDK_USER_AGENT": "{ \"user_agent_extra\": \"AwsSolution/SO0151/v1.6.0\" }"
+          }
+        },
+        "Handler": "lambda_function.handler",
+        "Runtime": "python3.8",
+        "Timeout": 30
+      },
+      "DependsOn": [
+        "LambdaFnCustomResourceRole86D5808B"
+      ],
+      "Metadata": {
+        "cfn_nag": {
+          "rules_to_suppress": [
+            {
+              "id": "W89",
+              "reason": "This function does not need to be deployed in a VPC"
+            },
+            {
+              "id": "W92",
+              "reason": "This function does not require reserved concurrency"
+            }
+          ]
+        }
+      },
+      "Condition": "LambdaFnIsSecretNotEmptyCondition8D346EFC"
+    },
+    "LambdaFnSecretMetadata74A6DFB5": {
+      "Type": "Custom::SecretMetadata",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "LambdaFnCustomResourceC3F49C43",
+            "Arn"
+          ]
+        },
+        "SecretArn": {
+          "Ref": "SecretArn"
+        }
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/LambdaFn/SecretMetadata/Default"
+      },
+      "Condition": "LambdaFnIsSecretNotEmptyCondition8D346EFC"
+    },
+    "LambdaFnSecretPolicy4F390456": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "kms:Decrypt",
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "secretsmanager.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".",
+                        {
+                          "Ref": "AWS::URLSuffix"
+                        }
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "LambdaFnSecretMetadata74A6DFB5",
+                  "KmsKeyId"
+                ]
+              }
+            },
+            {
+              "Action": "secretsmanager:GetSecretValue",
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SecretArn"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "LambdaFnSecretPolicy4F390456",
+        "Roles": [
+          {
+            "Ref": "LambdaFnRole32F542B0"
+          }
+        ]
+      },
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/LambdaFn/SecretPolicy/Resource"
+      },
+      "Condition": "LambdaFnIsSecretNotEmptyCondition8D346EFC"
+    },
+    "LambdaFnConsumer9B1F02CF": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "solutions-${AWS::Region}"
+          },
+          "S3Key": "aws-streaming-data-solution-for-amazon-msk/v1.6.0/asset2db8abaf9fd3d0ca8909e2e3f818e5c7c043cd0f69c00fe15e3ec524ea243073.zip"
+        },
+        "Role": {
+          "Fn::GetAtt": [
+            "LambdaFnRole32F542B0",
+            "Arn"
+          ]
+        },
+        "Environment": {
+          "Variables": {
+            "DELIVERY_STREAM_NAME": {
+              "Ref": "KdfToS3KinesisFirehoseCE3CF29D"
+            },
+            "AWS_SDK_USER_AGENT": "{ \"customUserAgent\": \"AwsSolution/SO0151/v1.6.0\" }"
+          }
+        },
+        "Handler": "index.handler",
+        "Runtime": "nodejs14.x",
+        "Timeout": 300
+      },
+      "DependsOn": [
+        "LambdaFnRoleDefaultPolicyEB0F84C6",
+        "LambdaFnRole32F542B0"
+      ],
+      "Metadata": {
+        "cfn_nag": {
+          "rules_to_suppress": [
+            {
+              "id": "W89",
+              "reason": "This function does not need to be deployed in a VPC"
+            },
+            {
+              "id": "W92",
+              "reason": "This function does not require reserved concurrency"
+            }
+          ]
+        }
+      }
+    },
+    "LambdaFnConsumerMapping53F489A8": {
+      "Type": "AWS::Lambda::EventSourceMapping",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "LambdaFnConsumer9B1F02CF"
+        },
+        "BatchSize": {
+          "Ref": "BatchSize"
+        },
+        "Enabled": true,
+        "EventSourceArn": {
+          "Ref": "ClusterArn"
+        },
+        "StartingPosition": "LATEST",
+        "Topics": [
+          {
+            "Ref": "TopicName"
+          }
+        ]
+      },
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/LambdaFn/Consumer/Mapping/Resource"
+      },
+      "Condition": "LambdaFnIsSecretEmptyCondition286B95AE"
+    },
+    "LambdaFnConsumerMappingWithSecretC9DE0BFB": {
+      "Type": "AWS::Lambda::EventSourceMapping",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "LambdaFnConsumer9B1F02CF"
+        },
+        "BatchSize": {
+          "Ref": "BatchSize"
+        },
+        "Enabled": true,
+        "EventSourceArn": {
+          "Ref": "ClusterArn"
+        },
+        "SourceAccessConfigurations": [
+          {
+            "Type": "SASL_SCRAM_512_AUTH",
+            "URI": {
+              "Ref": "SecretArn"
+            }
+          }
+        ],
+        "StartingPosition": "LATEST",
+        "Topics": [
+          {
+            "Ref": "TopicName"
+          }
+        ]
+      },
+      "DependsOn": [
+        "LambdaFnSecretPolicy4F390456"
+      ],
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/LambdaFn/Consumer/MappingWithSecret/Resource"
+      },
+      "Condition": "LambdaFnIsSecretNotEmptyCondition8D346EFC"
+    },
+    "SolutionHelperRoleC017C62A": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":logs:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":log-group:/aws/lambda/*"
+                      ]
+                    ]
+                  }
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "CloudWatchLogsPolicy"
+          }
+        ]
+      },
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/SolutionHelper/Role/Role/Resource"
+      }
+    },
+    "SolutionHelper4825923B": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "solutions-${AWS::Region}"
+          },
+          "S3Key": "aws-streaming-data-solution-for-amazon-msk/v1.6.0/asset35eb3d2be0fc6a75b3db72b0c25196a41b3a51b9805660e9dc7d6f73048b8407.zip"
+        },
+        "Role": {
+          "Fn::GetAtt": [
+            "SolutionHelperRoleC017C62A",
+            "Arn"
+          ]
+        },
+        "Description": "This function generates UUID for each deployment and sends anonymous data to the AWS Solutions team",
+        "Environment": {
+          "Variables": {
+            "AWS_SDK_USER_AGENT": "{ \"user_agent_extra\": \"AwsSolution/SO0151/v1.6.0\" }"
+          }
+        },
+        "Handler": "lambda_function.handler",
+        "Runtime": "python3.8",
+        "Timeout": 30
+      },
+      "DependsOn": [
+        "SolutionHelperRoleC017C62A"
+      ],
+      "Metadata": {
+        "cfn_nag": {
+          "rules_to_suppress": [
+            {
+              "id": "W89",
+              "reason": "This function does not need to be deployed in a VPC"
+            },
+            {
+              "id": "W92",
+              "reason": "This function does not require reserved concurrency"
+            }
+          ]
+        }
+      },
+      "Condition": "SolutionHelperAnonymousDatatoAWSD898118F"
+    },
+    "SolutionHelperCreateUniqueIDAF03406A": {
+      "Type": "Custom::CreateUUID",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "SolutionHelper4825923B",
+            "Arn"
+          ]
+        },
+        "Resource": "UUID"
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/SolutionHelper/CreateUniqueID/Default"
+      },
+      "Condition": "SolutionHelperAnonymousDatatoAWSD898118F"
+    },
+    "SolutionHelperSendAnonymousData9B19E31D": {
+      "Type": "Custom::AnonymousData",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "SolutionHelper4825923B",
+            "Arn"
+          ]
+        },
+        "Resource": "AnonymousMetric",
+        "UUID": {
+          "Fn::GetAtt": [
+            "SolutionHelperCreateUniqueIDAF03406A",
+            "UUID"
+          ]
+        },
+        "Region": {
+          "Ref": "AWS::Region"
+        },
+        "SolutionId": "SO0151",
+        "Version": "v1.6.0",
+        "Pattern": "MskLambdaKdf",
+        "BufferingSize": {
+          "Ref": "BufferingSize"
+        },
+        "BufferingInterval": {
+          "Ref": "BufferingInterval"
+        },
+        "CompressionFormat": {
+          "Ref": "CompressionFormat"
+        }
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/SolutionHelper/SendAnonymousData/Default"
+      },
+      "Condition": "SolutionHelperAnonymousDatatoAWSD898118F"
+    },
+    "CDKMetadata": {
+      "Type": "AWS::CDK::Metadata",
+      "Properties": {
+        "Analytics": "v2:deflate64:H4sIAAAAAAAA/2VQ0U7DMAz8lr2nGd0QvMIG4wEQ08oPhNQrWdu4ipOhKcq/kzRlTPDk8/ninK/k5eKGX83uxBcVXtbt3Es0wH1lhWzZeq+3wogeLBi2Rk3WOGnZDgidkZDmka2VVajZPRHY+K5RumFrRxb7S+ElfhXDMKr2+s3ZwdnARgO05H7lZAs2jSaUyxY7JU+/9NTnZiUIAuuwIe5fsHky6IYkPeMIKmtA9BObm8CU6LnfYZcdpvr7T0aBtUoDKdorA59IwOPoATp1BHOadnai/6gF9xun5RhFlJzx4xG0rcbTL87+zwZGy0KkDImPUYbIYOfSEirkT/g0T0n98VTE4J4ztZmod6yWgWmsgR9ofiyveXnLF7MDKVUYp63qge9y/QaRuXOKBQIAAA=="
+      },
+      "Metadata": {
+        "aws:cdk:path": "aws-streaming-data-solution-for-msk-using-aws-lambda-and-kinesis-data-firehose/CDKMetadata/Default"
+      },
+      "Condition": "CDKMetadataAvailable"
+    }
+  },
+  "Conditions": {
+    "LambdaFnIsSecretEmptyCondition286B95AE": {
+      "Fn::Equals": [
+        {
+          "Ref": "SecretArn"
+        },
+        ""
+      ]
+    },
+    "LambdaFnIsSecretNotEmptyCondition8D346EFC": {
+      "Fn::Not": [
+        {
+          "Condition": "LambdaFnIsSecretEmptyCondition286B95AE"
+        }
+      ]
+    },
+    "SolutionHelperAnonymousDatatoAWSD898118F": {
+      "Fn::Equals": [
+        {
+          "Fn::FindInMap": [
+            "SolutionHelperAnonymousData14B64A81",
+            "SendAnonymousData",
+            "Data"
+          ]
+        },
+        "Yes"
+      ]
+    },
+    "CDKMetadataAvailable": {
+      "Fn::Or": [
+        {
+          "Fn::Or": [
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "af-south-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "ap-east-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "ap-northeast-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "ap-northeast-2"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "ap-south-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "ap-southeast-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "ap-southeast-2"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "ca-central-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "cn-north-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "cn-northwest-1"
+              ]
+            }
+          ]
+        },
+        {
+          "Fn::Or": [
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "eu-central-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "eu-north-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "eu-south-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "eu-west-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "eu-west-2"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "eu-west-3"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "me-south-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "sa-east-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "us-east-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "us-east-2"
+              ]
+            }
+          ]
+        },
+        {
+          "Fn::Or": [
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "us-west-1"
+              ]
+            },
+            {
+              "Fn::Equals": [
+                {
+                  "Ref": "AWS::Region"
+                },
+                "us-west-2"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "Mappings": {
+    "SolutionHelperAnonymousData14B64A81": {
+      "SendAnonymousData": {
+        "Data": "Yes"
+      }
+    }
+  },
+  "Outputs": {
+    "LambdaFunctionName": {
+      "Description": "Name of the AWS Lambda function",
+      "Value": {
+        "Ref": "LambdaFnConsumer9B1F02CF"
+      }
+    },
+    "DeliveryStreamName": {
+      "Description": "Name of the Amazon Kinesis Data Firehose delivery stream",
+      "Value": {
+        "Ref": "KdfToS3KinesisFirehoseCE3CF29D"
+      }
+    },
+    "OutputBucketName": {
+      "Description": "Name of the Amazon S3 destination bucket",
+      "Value": {
+        "Ref": "OutputBucketB1E245A7"
+      }
+    }
+  }
+}
